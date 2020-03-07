@@ -27,6 +27,7 @@ help:
 	@echo  '  uninstall - uninstall (./local)'
 	@echo  '  gh-pages  - build docs & deploy on gh-pages branch'
 	@echo  '  clean     - drop builds and environments'
+	@echo  '  project   - re-build generic files of the searx project'
 	@echo  ''
 	@$(MAKE) -s -f utils/makefile.include make-help
 	@echo  ''
@@ -67,14 +68,29 @@ docs-live:  pyenvinstall sphinx-live
 $(GH_PAGES)::
 	@echo "doc available at --> $(DOCS_URL)"
 
+# update project files
+# --------------------
+
+PHONY += project engines-languages
+
+project: searx/data/engines_languages.json
+
+searx/data/engines_languages.json:  pyenvinstall
+	$(PY_ENV_ACT); python utils/fetch_languages.py
+	mv engines_languages.json searx/data/engines_languages.json
+	mv languages.py searx/languages.py
+
 # test
 # ----
 
 PHONY += test test.pylint test.pep8 test.unit test.robot
 
+test: test.pylint test.pep8 test.unit test.robot
+
 # TODO: balance linting with pylint
-test: test.pep8 test.unit test.robot
-	- make pylint
+test.pylint: pyenvinstall
+	$(call cmd,pylint,searx/preferences.py)
+	$(call cmd,pylint,searx/testing.py)
 
 test.pep8: pyenvinstall
 	$(PY_ENV_ACT); ./manage.sh pep8_check

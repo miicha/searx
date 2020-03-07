@@ -165,16 +165,16 @@ def search_one_http_request_safe(engine_name, query, request_params, result_cont
             # yes, so add results
             result_container.extend(engine_name, search_results)
 
-            # update engine time when there is no exception
-            engine_time = time() - start_time
-            page_load_time = requests_lib.get_time_for_thread()
-            result_container.add_timing(engine_name, engine_time, page_load_time)
-            with threading.RLock():
-                engine.stats['engine_time'] += engine_time
-                engine.stats['engine_time_count'] += 1
-                # update stats with the total HTTP time
-                engine.stats['page_load_time'] += page_load_time
-                engine.stats['page_load_count'] += 1
+        # update engine time when there is no exception
+        engine_time = time() - start_time
+        page_load_time = requests_lib.get_time_for_thread()
+        result_container.add_timing(engine_name, engine_time, page_load_time)
+        with threading.RLock():
+            engine.stats['engine_time'] += engine_time
+            engine.stats['engine_time_count'] += 1
+            # update stats with the total HTTP time
+            engine.stats['page_load_time'] += page_load_time
+            engine.stats['page_load_count'] += 1
 
     except Exception as e:
         # Timing
@@ -408,7 +408,7 @@ def get_search_query_from_webapp(preferences, form):
 
     return (SearchQuery(query, query_engines, query_categories,
                         query_lang, query_safesearch, query_pageno,
-                        query_time_range, query_timeout),
+                        query_time_range, query_timeout, preferences),
             raw_text_query)
 
 
@@ -460,6 +460,9 @@ class Search(object):
 
             engine = engines[selected_engine['name']]
 
+            if not search_query.preferences.validate_token(engine):
+                continue
+
             # skip suspended engines
             if engine.suspend_end_time >= time():
                 logger.debug('Engine currently suspended: %s', selected_engine['name'])
@@ -503,6 +506,15 @@ class Search(object):
 
             # update default_timeout
             default_timeout = max(default_timeout, engine.timeout)
+
+            # append another request with default search language to list
+            # ToDo make default_search_lang user configurable
+            logger.debug(settings)
+            if request_params['language'] != settings['search']['default_search_lang']:
+                request_params_default_lang = copy.deepcopy(request_params)
+                request_params_default_lang['language'] = settings['search']['default_search_lang']
+                requests.append((selected_engine['name'], search_query.query, request_params_default_lang))
+            logger.debug(requests)
 
         # adjust timeout
         self.actual_timeout = default_timeout

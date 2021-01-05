@@ -9,9 +9,9 @@ path.append(realpath(dirname(realpath(__file__)) + '/../'))
 import json
 import requests
 import re
+from urllib.parse import urlparse, urljoin
 from distutils.version import LooseVersion, StrictVersion
 from lxml import html
-from searx.url_utils import urlparse, urljoin
 from searx import searx_dir
 
 URL = 'https://ftp.mozilla.org/pub/firefox/releases/'
@@ -24,7 +24,7 @@ NORMAL_REGEX = re.compile('^[0-9]+\.[0-9](\.[0-9])?$')
 # 
 useragents = {
     "versions": (),
-    "os": ('Windows NT 10; WOW64',
+    "os": ('Windows NT 10.0; WOW64',
            'X11; Linux x86_64'),
     "ua": "Mozilla/5.0 ({os}; rv:{version}) Gecko/20100101 Firefox/{version}"
 }

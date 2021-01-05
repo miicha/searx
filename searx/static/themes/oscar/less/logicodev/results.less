@@ -27,7 +27,7 @@
     }
 }
 
-.result-content {
+.result-content, .result-format, .result-source {
     margin-top: 2px;
     margin-bottom: 0;
     word-wrap: break-word;
@@ -39,6 +39,21 @@
         font-weight:bold;
     }
 
+}
+
+.result-source {
+    font-size: 10px;
+    float: left;
+}
+
+.result-format {
+    font-size: 10px;
+    float: right;
+}
+
+.result-abstract {
+    margin-top: 0.5em;
+    margin-bottom: 0.8em;
 }
 
 .external-link {
@@ -114,6 +129,20 @@
     }
 }
 
+.result-metadata {
+    clear: both;
+    margin: 1em;
+
+    td {
+        padding-right: 1em;
+        color: @gray;
+    }
+
+    td:first-of-type {
+        color: @dark-gray;
+    }
+}
+
 // map formating of results
 .result-map {
     clear: both;
@@ -154,7 +183,7 @@
 }
 
 .label-default {
-    color: @gray;
+    color: @dark-gray;
     background: transparent;
 }
 
@@ -174,4 +203,10 @@
     box-shadow: 0 3px 9px rgba(0, 0, 0, 0.5);
     outline: 0 none;
     position: relative;
+}
+
+@media screen and (max-width: 75em) {
+    .img-thumbnail {
+        object-fit: cover;
+    }
 }

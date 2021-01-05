@@ -11,10 +11,9 @@
 """
 
 from datetime import date, timedelta
-from json import loads
+from urllib.parse import urlencode
 from lxml import html
-from searx.engines.xpath import extract_text
-from searx.url_utils import urlencode
+from searx.utils import extract_text, eval_xpath, eval_xpath_list, eval_xpath_getindex
 import re
 
 # engine dependent config
@@ -67,23 +66,25 @@ def response(resp):
     dom = html.fromstring(resp.text)
 
     # parse results
-    for result in dom.xpath('//div[@class="g"]'):
+    for result in eval_xpath_list(dom, '//div[@class="g"]'):
 
-        title = extract_text(result.xpath('.//h3'))
-        url = result.xpath('.//div[@class="r"]/a/@href')[0]
-        content = extract_text(result.xpath('.//span[@class="st"]'))
+        title = extract_text(eval_xpath(result, './/h3'))
+        url = eval_xpath_getindex(result, './/div[@class="r"]/a/@href', 0)
+        content = extract_text(eval_xpath(result, './/span[@class="st"]'))
 
         # get thumbnails
         script = str(dom.xpath('//script[contains(., "_setImagesSrc")]')[0].text)
-        id = result.xpath('.//div[@class="s"]//img/@id')[0]
-        thumbnails_data = re.findall('s=\'(.*?)(?:\\\\[a-z,1-9,\\\\]+\'|\')\;var ii=\[(?:|[\'vidthumb\d+\',]+)\'' + id,
-                                     script)
-        tmp = []
-        if len(thumbnails_data) != 0:
-            tmp = re.findall('(data:image/jpeg;base64,[a-z,A-Z,0-9,/,\+]+)', thumbnails_data[0])
-        thumbnail = ''
-        if len(tmp) != 0:
-            thumbnail = tmp[-1]
+        ids = result.xpath('.//div[@class="s"]//img/@id')
+        if len(ids) > 0:
+            thumbnails_data = \
+                re.findall('s=\'(.*?)(?:\\\\[a-z,1-9,\\\\]+\'|\')\;var ii=\[(?:|[\'vidthumb\d+\',]+)\'' + ids[0],
+                           script)
+            tmp = []
+            if len(thumbnails_data) != 0:
+                tmp = re.findall('(data:image/jpeg;base64,[a-z,A-Z,0-9,/,\+]+)', thumbnails_data[0])
+            thumbnail = ''
+            if len(tmp) != 0:
+                thumbnail = tmp[-1]
 
         # append result
         results.append({'url': url,

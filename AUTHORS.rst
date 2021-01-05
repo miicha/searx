@@ -1,4 +1,4 @@
-Searx was created by Adam Tauber and is maintained by Adam Tauber, Alexandre Flament and Noémi Ványi.
+Searx was created by Adam Tauber and is maintained by Adam Tauber, Alexandre Flament, Noémi Ványi, @pofilo, Gaspard d'Hautefeuille and Markus Heiser.
 
 Major contributing authors:
 
@@ -9,6 +9,9 @@ Major contributing authors:
 - @Cqoicebordel
 - Noémi Ványi
 - Marc Abonce Seguin @a01200356
+- @pofilo
+- Markus Heiser @return42
+- Émilien Devos @unixfox
 
 People who have submitted patches/translates, reported bugs, consulted features or
 generally made searx better:
@@ -94,7 +97,63 @@ generally made searx better:
 - Alice Ferrazzi @aliceinwire
 - @LiquidLemon
 - @dadosch
-- @Venca24
+- Václav Zouzalík @Venca24
 - @ZEROF
 - Ivan Skytte Jørgensen @isj-privacore
 - @miicha
+- Étienne Deparis @milouse
+- @pelag0s
+- Denis Wernert @d-tux
+- Robin Hallabro-Kokko @hallabro
+- Jonas Zohren @jfowl
+- Elias Ojala @theel0ja
+- @brunob
+- Nick Espig @nachtalb
+- Rachmadani Haryono @rachmadaniHaryono
+- Frank de Lange @yetangitu
+- Nicolas Gelot @nfk
+- @volth
+- Mathieu Brunot @madmath03
+- @lorddavidiii
+- @x250
+- Robby O'Connor @robbyoconnor
+- Finn @0xhtml
+- @tmikaeld
+- @hobbestigrou
+- Vipul @finn0
+- @CaffeinatedTech
+- Robin Schneider @ypid
+- @splintah
+- Lukas van den Berk @lukasvdberk
+- @piplongrun
+- Jason Kaltsikis @jjasonkal
+- Sion Kazama @KazamaSion
+- @resynth1943
+- Mostafa Ahangarha @ahangarha
+- @gordon-quad
+- Sophie Tauchert @999eagle
+- @bauruine
+- Michael Ilsaas `<https://mikeri.net>`_
+- @renyhp
+- rachmadani haryono @rachmadaniHaryono
+- Mohamad Safadieh @msafadieh
+- @gardouille
+- @resynth1943
+- @Eliesemoule
+- @gardouille
+- @GazoilKerozen
+- Lukáš Kucharczyk @KucharczykL
+- Lynda Lopez @lyndalopez544
+- M. Efe Çetin @efectn
+- Nícholas Kegler @nicholasks
+- @pierrechtux
+- Scott Wallace @scottwallacesh
+- @Singustromo
+- @TheEvilSkeleton
+- @Wonderfall
+- @mrwormo
+- Xiaoyu WEI @xywei
+- @joshu9h
+
+
+

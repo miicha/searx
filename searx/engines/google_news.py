@@ -10,10 +10,10 @@
  @parse       url, title, content, publishedDate
 """
 
+from urllib.parse import urlencode
 from lxml import html
-from searx.engines.google import _fetch_supported_languages, supported_languages_url
-from searx.url_utils import urlencode
 from searx.utils import match_language
+from searx.engines.google import _fetch_supported_languages, supported_languages_url  # NOQA # pylint: disable=unused-import
 
 # search-url
 categories = ['news']
@@ -54,7 +54,7 @@ def request(query, params):
     if params['language'] != 'all':
         language = match_language(params['language'], supported_languages, language_aliases).split('-')[0]
         if language:
-            params['url'] += '&lr=lang_' + language
+            params['url'] += '&hl=' + language
 
     return params
 

@@ -15,14 +15,11 @@
 
 from lxml.html import fromstring
 from json import loads
-from searx.engines.xpath import extract_text
-from searx.poolrequests import get
-from searx.url_utils import urlencode
-from searx.utils import match_language
+from searx.utils import extract_text, match_language, eval_xpath
 
 # engine dependent config
 categories = ['general']
-paging = True
+paging = False
 language_support = True
 supported_languages_url = 'https://duckduckgo.com/util/u172.js'
 time_range_support = True
@@ -38,9 +35,7 @@ language_aliases = {
 }
 
 # search-url
-url = 'https://duckduckgo.com/html?{query}&s={offset}&dc={dc_param}'
-time_range_url = '&df={range}'
-
+url = 'https://html.duckduckgo.com/html'
 time_range_dict = {'day': 'd',
                    'week': 'w',
                    'month': 'm'}
@@ -50,14 +45,15 @@ result_xpath = '//div[@class="result results_links results_links_deep web-result
 url_xpath = './/a[@class="result__a"]/@href'
 title_xpath = './/a[@class="result__a"]'
 content_xpath = './/a[@class="result__snippet"]'
+correction_xpath = '//div[@id="did_you_mean"]//a'
 
 
 # match query's language to a region code that duckduckgo will accept
-def get_region_code(lang, lang_list=[]):
+def get_region_code(lang, lang_list=None):
     if lang == 'all':
         return None
 
-    lang_code = match_language(lang, lang_list, language_aliases, 'wt-WT')
+    lang_code = match_language(lang, lang_list or [], language_aliases, 'wt-WT')
     lang_parts = lang_code.split('-')
 
     # country code goes first
@@ -65,21 +61,21 @@ def get_region_code(lang, lang_list=[]):
 
 
 def request(query, params):
-    if params['time_range'] and params['time_range'] not in time_range_dict:
+    if params['time_range'] is not None and params['time_range'] not in time_range_dict:
         return params
 
-    offset = (params['pageno'] - 1) * 30
+    params['url'] = url
+    params['method'] = 'POST'
+    params['data']['b'] = ''
+    params['data']['q'] = query
+    params['data']['df'] = ''
 
     region_code = get_region_code(params['language'], supported_languages)
     if region_code:
-        params['url'] = url.format(
-            query=urlencode({'q': query, 'kl': region_code}), offset=offset, dc_param=offset)
-    else:
-        params['url'] = url.format(
-            query=urlencode({'q': query}), offset=offset, dc_param=offset)
-
+        params['data']['kl'] = region_code
+        params['cookies']['kl'] = region_code
     if params['time_range'] in time_range_dict:
-        params['url'] += time_range_url.format(range=time_range_dict[params['time_range']])
+        params['data']['df'] = time_range_dict[params['time_range']]
 
     return params
 
@@ -91,22 +87,29 @@ def response(resp):
     doc = fromstring(resp.text)
 
     # parse results
-    for r in doc.xpath(result_xpath):
+    for i, r in enumerate(eval_xpath(doc, result_xpath)):
+        if i >= 30:
+            break
         try:
-            res_url = r.xpath(url_xpath)[-1]
+            res_url = eval_xpath(r, url_xpath)[-1]
         except:
             continue
 
         if not res_url:
             continue
 
-        title = extract_text(r.xpath(title_xpath))
-        content = extract_text(r.xpath(content_xpath))
+        title = extract_text(eval_xpath(r, title_xpath))
+        content = extract_text(eval_xpath(r, content_xpath))
 
         # append result
         results.append({'title': title,
                         'content': content,
                         'url': res_url})
+
+    # parse correction
+    for correction in eval_xpath(doc, correction_xpath):
+        # append correction
+        results.append({'correction': extract_text(correction)})
 
     # return results
     return results

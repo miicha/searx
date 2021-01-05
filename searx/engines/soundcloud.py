@@ -14,22 +14,20 @@ import re
 from json import loads
 from lxml import html
 from dateutil import parser
+from urllib.parse import quote_plus, urlencode
 from searx import logger
 from searx.poolrequests import get as http_get
-from searx.url_utils import quote_plus, urlencode
 
-try:
-    from cStringIO import StringIO
-except:
-    from io import StringIO
 
 # engine dependent config
 categories = ['music']
 paging = True
 
 # search-url
-url = 'https://api.soundcloud.com/'
+# missing attribute: user_id, app_version, app_locale
+url = 'https://api-v2.soundcloud.com/'
 search_url = url + 'search?{query}'\
+                         '&variant_ids='\
                          '&facet=model'\
                          '&limit=20'\
                          '&offset={offset}'\
@@ -49,7 +47,9 @@ def get_client_id():
 
     if response.ok:
         tree = html.fromstring(response.content)
-        script_tags = tree.xpath("//script[contains(@src, '/assets/app')]")
+        # script_tags has been moved from /assets/app/ to /assets/ path.  I
+        # found client_id in https://a-v2.sndcdn.com/assets/49-a0c01933-3.js
+        script_tags = tree.xpath("//script[contains(@src, '/assets/')]")
         app_js_urls = [script_tag.get('src') for script_tag in script_tags if script_tag is not None]
 
         # extracts valid app_js urls from soundcloud.com content
@@ -57,14 +57,14 @@ def get_client_id():
             # gets app_js and searches for the clientid
             response = http_get(app_js_url)
             if response.ok:
-                cids = cid_re.search(response.text)
+                cids = cid_re.search(response.content.decode())
                 if cids is not None and len(cids.groups()):
                     return cids.groups()[0]
     logger.warning("Unable to fetch guest client_id from SoundCloud, check parser!")
     return ""
 
 
-def init():
+def init(engine_settings=None):
     global guest_client_id
     # api-key
     guest_client_id = get_client_id()
@@ -91,7 +91,7 @@ def response(resp):
     for result in search_res.get('collection', []):
         if result['kind'] in ('track', 'playlist'):
             title = result['title']
-            content = result['description']
+            content = result['description'] or ''
             publishedDate = parser.parse(result['last_modified'])
             uri = quote_plus(result['uri'])
             embedded = embedded_url.format(uri=uri)

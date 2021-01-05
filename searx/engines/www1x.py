@@ -7,12 +7,12 @@
  @using-api   no
  @results     HTML
  @stable      no (HTML can change)
- @parse       url, title, thumbnail, img_src, content
+ @parse       url, title, thumbnail
 """
 
-from lxml import html
-import re
-from searx.url_utils import urlencode, urljoin
+from lxml import html, etree
+from urllib.parse import urlencode, urljoin
+from searx.utils import extract_text, eval_xpath_list, eval_xpath_getindex
 
 # engine dependent config
 categories = ['images']
@@ -21,6 +21,7 @@ paging = False
 # search-url
 base_url = 'https://1x.com'
 search_url = base_url + '/backend/search.php?{query}'
+gallery_url = 'https://gallery.1x.com/'
 
 
 # do search-request
@@ -33,46 +34,18 @@ def request(query, params):
 # get response from search-request
 def response(resp):
     results = []
-
-    # get links from result-text
-    regex = re.compile('(</a>|<a)')
-    results_parts = re.split(regex, resp.text)
-
-    cur_element = ''
-
-    # iterate over link parts
-    for result_part in results_parts:
-        # processed start and end of link
-        if result_part == '<a':
-            cur_element = result_part
-            continue
-        elif result_part != '</a>':
-            cur_element += result_part
-            continue
-
-        cur_element += result_part
-
-        # fix xml-error
-        cur_element = cur_element.replace('"></a>', '"/></a>')
-
-        dom = html.fromstring(cur_element)
-        link = dom.xpath('//a')[0]
-
+    xmldom = etree.fromstring(resp.content)
+    xmlsearchresult = eval_xpath_getindex(xmldom, '//searchresult', 0)
+    dom = html.fragment_fromstring(xmlsearchresult.text, create_parent='div')
+    for link in eval_xpath_list(dom, '/div/table/tr/td/div[2]//a'):
         url = urljoin(base_url, link.attrib.get('href'))
-        title = link.attrib.get('title', '')
-
-        thumbnail_src = urljoin(base_url, link.xpath('.//img')[0].attrib['src'])
-        # TODO: get image with higher resolution
-        img_src = thumbnail_src
-
-        # check if url is showing to a photo
-        if '/photo/' not in url:
-            continue
+        title = extract_text(link)
+        thumbnail_src = urljoin(gallery_url, eval_xpath_getindex(link, './/img', 0).attrib['src'])
 
         # append result
         results.append({'url': url,
                         'title': title,
-                        'img_src': img_src,
+                        'img_src': thumbnail_src,
                         'content': '',
                         'thumbnail_src': thumbnail_src,
                         'template': 'images.html'})

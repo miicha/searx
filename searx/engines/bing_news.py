@@ -13,10 +13,12 @@
 
 from datetime import datetime
 from dateutil import parser
+from urllib.parse import urlencode, urlparse, parse_qsl
 from lxml import etree
-from searx.utils import list_get, match_language
-from searx.engines.bing import _fetch_supported_languages, supported_languages_url, language_aliases
-from searx.url_utils import urlencode, urlparse, parse_qsl
+from lxml.etree import XPath
+from searx.utils import match_language, eval_xpath_getindex
+from searx.engines.bing import language_aliases
+from searx.engines.bing import _fetch_supported_languages, supported_languages_url  # NOQA # pylint: disable=unused-import
 
 # engine dependent config
 categories = ['news']
@@ -58,6 +60,7 @@ def _get_url(query, language, offset, time_range):
             offset=offset,
             interval=time_range_dict[time_range])
     else:
+        # e.g. setmkt=de-de&setlang=de
         search_path = search_string.format(
             query=urlencode({'q': query, 'setmkt': language}),
             offset=offset)
@@ -92,12 +95,12 @@ def response(resp):
     # parse results
     for item in rss.xpath('./channel/item'):
         # url / title / content
-        url = url_cleanup(item.xpath('./link/text()')[0])
-        title = list_get(item.xpath('./title/text()'), 0, url)
-        content = list_get(item.xpath('./description/text()'), 0, '')
+        url = url_cleanup(eval_xpath_getindex(item, './link/text()', 0, default=None))
+        title = eval_xpath_getindex(item, './title/text()', 0, default=url)
+        content = eval_xpath_getindex(item, './description/text()', 0, default='')
 
         # publishedDate
-        publishedDate = list_get(item.xpath('./pubDate/text()'), 0)
+        publishedDate = eval_xpath_getindex(item, './pubDate/text()', 0, default=None)
         try:
             publishedDate = parser.parse(publishedDate, dayfirst=False)
         except TypeError:
@@ -106,7 +109,7 @@ def response(resp):
             publishedDate = datetime.now()
 
         # thumbnail
-        thumbnail = list_get(item.xpath('./News:Image/text()', namespaces=ns), 0)
+        thumbnail = eval_xpath_getindex(item, XPath('./News:Image/text()', namespaces=ns), 0, default=None)
         if thumbnail is not None:
             thumbnail = image_url_cleanup(thumbnail)
 

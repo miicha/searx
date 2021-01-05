@@ -12,15 +12,12 @@
 # @todo        embedded (needs some md5 from video page)
 
 from json import loads
+from html import unescape
+from urllib.parse import urlencode
 from lxml import html
 from dateutil import parser
-from searx.engines.xpath import extract_text
-from searx.url_utils import urlencode
+from searx.utils import extract_text
 
-try:
-    from HTMLParser import HTMLParser
-except:
-    from html.parser import HTMLParser
 
 # engine dependent config
 categories = ['videos']
@@ -32,7 +29,7 @@ base_url = 'https://www.ina.fr'
 search_url = base_url + '/layout/set/ajax/recherche/result?autopromote=&hf={ps}&b={start}&type=Video&r=&{query}'
 
 # specific xpath variables
-results_xpath = '//div[contains(@class,"search-results--list")]/div[@class="media"]'
+results_xpath = '//div[contains(@class,"search-results--list")]//div[@class="media-body"]'
 url_xpath = './/a/@href'
 title_xpath = './/h3[@class="h3--title media-heading"]'
 thumbnail_xpath = './/img/@src'
@@ -58,15 +55,17 @@ def response(resp):
     if "content" not in response:
         return []
     dom = html.fromstring(response["content"])
-    p = HTMLParser()
 
     # parse results
     for result in dom.xpath(results_xpath):
         videoid = result.xpath(url_xpath)[0]
         url = base_url + videoid
-        title = p.unescape(extract_text(result.xpath(title_xpath)))
-        thumbnail = extract_text(result.xpath(thumbnail_xpath)[0])
-        if thumbnail[0] == '/':
+        title = unescape(extract_text(result.xpath(title_xpath)))
+        try:
+            thumbnail = extract_text(result.xpath(thumbnail_xpath)[0])
+        except:
+            thumbnail = ''
+        if thumbnail and thumbnail[0] == '/':
             thumbnail = base_url + thumbnail
         d = extract_text(result.xpath(publishedDate_xpath)[0])
         d = d.split('/')

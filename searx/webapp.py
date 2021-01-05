@@ -17,84 +17,79 @@ along with searx. If not, see < http://www.gnu.org/licenses/ >.
 (C) 2013- by Adam Tauber, <asciimoo@gmail.com>
 '''
 
+import sys
+if sys.version_info[0] < 3:
+    print('\033[1;31m Python2 is no longer supported\033[0m')
+    exit(1)
+
 if __name__ == '__main__':
-    from sys import path
     from os.path import realpath, dirname
-    path.append(realpath(dirname(realpath(__file__)) + '/../'))
+    sys.path.append(realpath(dirname(realpath(__file__)) + '/../'))
 
 import hashlib
 import hmac
 import json
 import os
-import sys
 
 import requests
 
 from searx import logger
 logger = logger.getChild('webapp')
 
-try:
-    from pygments import highlight
-    from pygments.lexers import get_lexer_by_name
-    from pygments.formatters import HtmlFormatter
-except:
-    logger.critical("cannot import dependency: pygments")
-    from sys import exit
-    exit(1)
-from cgi import escape
 from datetime import datetime, timedelta
-from werkzeug.contrib.fixers import ProxyFix
+from time import time
+from html import escape
+from io import StringIO
+from urllib.parse import urlencode, urljoin, urlparse
+
+from pygments import highlight
+from pygments.lexers import get_lexer_by_name
+from pygments.formatters import HtmlFormatter  # pylint: disable=no-name-in-module
+
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import (
     Flask, request, render_template, url_for, Response, make_response,
     redirect, send_from_directory
 )
+from babel.support import Translations
+import flask_babel
 from flask_babel import Babel, gettext, format_date, format_decimal
+from flask.ctx import has_request_context
 from flask.json import jsonify
+from searx import brand, static_path
 from searx import settings, searx_dir, searx_debug
 from searx.exceptions import SearxParameterException
 from searx.engines import (
-    categories, engines, engine_shortcuts, get_engines_stats, initialize_engines
+    categories, engines, engine_shortcuts, get_engines_stats
 )
-from searx.utils import (
-    UnicodeWriter, highlight_content, html_to_text, get_resources_directory,
-    get_static_files, get_result_templates, get_themes, gen_useragent,
-    dict_subset, prettify_url, match_language
+from searx.webutils import (
+    UnicodeWriter, highlight_content, get_resources_directory,
+    get_static_files, get_result_templates, get_themes,
+    prettify_url, new_hmac, is_flask_run_cmdline
 )
+from searx.webadapter import get_search_query_from_webapp, get_selected_categories
+from searx.utils import html_to_text, gen_useragent, dict_subset, match_language
 from searx.version import VERSION_STRING
 from searx.languages import language_codes as languages
-from searx.search import SearchWithPlugins, get_search_query_from_webapp
+from searx.search import SearchWithPlugins, initialize
 from searx.query import RawTextQuery
 from searx.autocomplete import searx_bang, backends as autocomplete_backends
 from searx.plugins import plugins
 from searx.plugins.oa_doi_rewrite import get_doi_resolver
 from searx.preferences import Preferences, ValidationException, LANGUAGE_CODES
 from searx.answerers import answerers
-from searx.url_utils import urlencode, urlparse, urljoin
-from searx.utils import new_hmac
+from searx.poolrequests import get_global_proxies
+from searx.metrology.error_recorder import errors_per_engines
 
-# check if the pyopenssl package is installed.
-# It is needed for SSL connection without trouble, see #298
-try:
-    import OpenSSL.SSL  # NOQA
-except ImportError:
-    logger.critical("The pyopenssl package has to be installed.\n"
-                    "Some HTTPS connections will fail")
-
-try:
-    from cStringIO import StringIO
-except:
-    from io import StringIO
-
-
-if sys.version_info[0] == 3:
-    unicode = str
-    PY3 = True
-else:
-    PY3 = False
 
 # serve pages with HTTP/1.1
 from werkzeug.serving import WSGIRequestHandler
 WSGIRequestHandler.protocol_version = "HTTP/{}".format(settings['server'].get('http_protocol_version', '1.0'))
+
+# check secret_key
+if not searx_debug and settings['server']['secret_key'] == 'ultrasecretkey':
+    logger.error('server.secret_key is not changed. Please use something else instead of ultrasecretkey.')
+    exit(1)
 
 # about static
 static_path = get_resources_directory(searx_dir, 'static', settings['ui']['static_path'])
@@ -123,16 +118,29 @@ app = Flask(
 
 app.jinja_env.trim_blocks = True
 app.jinja_env.lstrip_blocks = True
+app.jinja_env.add_extension('jinja2.ext.loopcontrols')  # pylint: disable=no-member
 app.secret_key = settings['server']['secret_key']
 
-if not searx_debug \
-   or os.environ.get("WERKZEUG_RUN_MAIN") == "true" \
-   or os.environ.get('UWSGI_ORIGINAL_PROC_NAME') is not None:
-    initialize_engines(settings['engines'])
+# see https://flask.palletsprojects.com/en/1.1.x/cli/
+# True if "FLASK_APP=searx/webapp.py FLASK_ENV=development flask run"
+flask_run_development = \
+    os.environ.get("FLASK_APP") is not None\
+    and os.environ.get("FLASK_ENV") == 'development'\
+    and is_flask_run_cmdline()
+
+# True if reload feature is activated of werkzeug, False otherwise (including uwsgi, etc..)
+#  __name__ != "__main__" if searx.webapp is imported (make test, make docs, uwsgi...)
+# see run() at the end of this file : searx_debug activates the reload feature.
+werkzeug_reloader = flask_run_development or (searx_debug and __name__ == "__main__")
+
+# initialize the engines except on the first run of the werkzeug server.
+if not werkzeug_reloader\
+   or (werkzeug_reloader and os.environ.get("WERKZEUG_RUN_MAIN") == "true"):
+    initialize()
 
 babel = Babel(app)
 
-rtl_locales = ['ar', 'arc', 'bcc', 'bqi', 'ckb', 'dv', 'fa', 'glk', 'he',
+rtl_locales = ['ar', 'arc', 'bcc', 'bqi', 'ckb', 'dv', 'fa', 'fa_IR', 'glk', 'he',
                'ku', 'mzn', 'pnb', 'ps', 'sd', 'ug', 'ur', 'yi']
 
 # used when translating category names
@@ -145,29 +153,61 @@ _category_names = (gettext('files'),
                    gettext('it'),
                    gettext('news'),
                    gettext('map'),
+                   gettext('onions'),
                    gettext('science'))
 
-outgoing_proxies = settings['outgoing'].get('proxies') or None
+_flask_babel_get_translations = flask_babel.get_translations
+
+
+# monkey patch for flask_babel.get_translations
+def _get_translations():
+    if has_request_context() and request.form.get('use-translation') == 'oc':
+        babel_ext = flask_babel.current_app.extensions['babel']
+        return Translations.load(next(babel_ext.translation_directories), 'oc')
+
+    return _flask_babel_get_translations()
+
+
+flask_babel.get_translations = _get_translations
+
+
+def _get_browser_or_settings_language(request, lang_list):
+    for lang in request.headers.get("Accept-Language", "en").split(","):
+        if ';' in lang:
+            lang = lang.split(';')[0]
+        locale = match_language(lang, lang_list, fallback=None)
+        if locale is not None:
+            return locale
+    return settings['search']['default_lang'] or 'en'
 
 
 @babel.localeselector
 def get_locale():
-    locale = request.accept_languages.best_match(settings['locales'].keys())
-
-    if request.preferences.get_value('locale') != '':
-        locale = request.preferences.get_value('locale')
-
-    if 'locale' in request.args\
-       and request.args['locale'] in settings['locales']:
-        locale = request.args['locale']
-
     if 'locale' in request.form\
        and request.form['locale'] in settings['locales']:
+        # use locale from the form
         locale = request.form['locale']
+        locale_source = 'form'
+    elif request.preferences.get_value('locale') != '':
+        # use locale from the preferences
+        locale = request.preferences.get_value('locale')
+        locale_source = 'preferences'
+    else:
+        # use local from the browser
+        locale = _get_browser_or_settings_language(request, settings['locales'].keys())
+        locale_source = 'browser'
 
+    #
     if locale == 'zh_TW':
         locale = 'zh_Hant_TW'
 
+    # see _get_translations function
+    # and https://github.com/searx/searx/pull/1863
+    if locale == 'oc':
+        request.form['use-translation'] = 'oc'
+        locale = 'fr_FR'
+
+    logger.debug("%s uses locale `%s` from %s", request.url, locale, locale_source)
     return locale
 
 
@@ -266,7 +306,12 @@ def url_for_theme(endpoint, override_theme=None, **values):
         filename_with_theme = "themes/{}/{}".format(theme_name, values['filename'])
         if filename_with_theme in static_files:
             values['filename'] = filename_with_theme
-    return url_for(endpoint, **values)
+    url = url_for(endpoint, **values)
+    if settings['server']['base_url']:
+        if url.startswith('/'):
+            url = url[1:]
+        url = urljoin(settings['server']['base_url'], url)
+    return url
 
 
 def proxify(url):
@@ -276,11 +321,11 @@ def proxify(url):
     if not settings.get('result_proxy'):
         return url
 
-    url_params = dict(mortyurl=url.encode('utf-8'))
+    url_params = dict(mortyurl=url.encode())
 
     if settings['result_proxy'].get('key'):
         url_params['mortyhash'] = hmac.new(settings['result_proxy']['key'],
-                                           url.encode('utf-8'),
+                                           url.encode(),
                                            hashlib.sha256).hexdigest()
 
     return '{0}?{1}'.format(settings['result_proxy']['url'],
@@ -295,16 +340,23 @@ def image_proxify(url):
     if not request.preferences.get_value('image_proxy'):
         return url
 
-    if url.startswith('data:image/jpeg;base64,'):
-        return url
+    if url.startswith('data:image/'):
+        # 50 is an arbitrary number to get only the beginning of the image.
+        partial_base64 = url[len('data:image/'):50].split(';')
+        if len(partial_base64) == 2 \
+           and partial_base64[0] in ['gif', 'png', 'jpeg', 'pjpeg', 'webp', 'tiff', 'bmp']\
+           and partial_base64[1].startswith('base64,'):
+            return url
+        else:
+            return None
 
     if settings.get('result_proxy'):
         return proxify(url)
 
-    h = new_hmac(settings['server']['secret_key'], url.encode('utf-8'))
+    h = new_hmac(settings['server']['secret_key'], url.encode())
 
     return '{0}?{1}'.format(url_for('image_proxy'),
-                            urlencode(dict(url=url.encode('utf-8'), h=h)))
+                            urlencode(dict(url=url.encode(), h=h)))
 
 
 def render(template_name, override_theme=None, **kwargs):
@@ -315,38 +367,16 @@ def render(template_name, override_theme=None, **kwargs):
                              if (engine_name, category) not in disabled_engines)
 
     if 'categories' not in kwargs:
-        kwargs['categories'] = ['general']
-        kwargs['categories'].extend(x for x in
-                                    sorted(categories.keys())
-                                    if x != 'general'
-                                    and x in enabled_categories)
-
-    if 'all_categories' not in kwargs:
-        kwargs['all_categories'] = ['general']
-        kwargs['all_categories'].extend(x for x in
-                                        sorted(categories.keys())
-                                        if x != 'general')
-
-    if 'selected_categories' not in kwargs:
-        kwargs['selected_categories'] = []
-        for arg in request.args:
-            if arg.startswith('category_'):
-                c = arg.split('_', 1)[1]
-                if c in categories:
-                    kwargs['selected_categories'].append(c)
-
-    if not kwargs['selected_categories']:
-        cookie_categories = request.preferences.get_value('categories')
-        for ccateg in cookie_categories:
-            kwargs['selected_categories'].append(ccateg)
-
-    if not kwargs['selected_categories']:
-        kwargs['selected_categories'] = ['general']
+        kwargs['categories'] = [x for x in
+                                _get_ordered_categories()
+                                if x in enabled_categories]
 
     if 'autocomplete' not in kwargs:
         kwargs['autocomplete'] = request.preferences.get_value('autocomplete')
 
-    if get_locale() in rtl_locales and 'rtl' not in kwargs:
+    locale = request.preferences.get_value('locale')
+
+    if locale in rtl_locales and 'rtl' not in kwargs:
         kwargs['rtl'] = True
 
     kwargs['searx_version'] = VERSION_STRING
@@ -358,8 +388,7 @@ def render(template_name, override_theme=None, **kwargs):
     kwargs['language_codes'] = languages
     if 'current_language' not in kwargs:
         kwargs['current_language'] = match_language(request.preferences.get_value('language'),
-                                                    LANGUAGE_CODES,
-                                                    fallback=settings['search']['language'])
+                                                    LANGUAGE_CODES)
 
     # override url_for function in templates
     kwargs['url_for'] = url_for_theme
@@ -367,6 +396,9 @@ def render(template_name, override_theme=None, **kwargs):
     kwargs['image_proxify'] = image_proxify
 
     kwargs['proxify'] = proxify if settings.get('result_proxy', {}).get('url') else None
+
+    kwargs['opensearch_url'] = url_for('opensearch') + '?' \
+        + urlencode({'method': kwargs['method'], 'autocomplete': kwargs['autocomplete']})
 
     kwargs['get_result_template'] = get_result_template
 
@@ -382,11 +414,12 @@ def render(template_name, override_theme=None, **kwargs):
 
     kwargs['results_on_new_tab'] = request.preferences.get_value('results_on_new_tab')
 
-    kwargs['unicode'] = unicode
-
     kwargs['preferences'] = request.preferences
 
+    kwargs['brand'] = brand
+
     kwargs['scripts'] = set()
+    kwargs['endpoint'] = 'results' if 'q' in kwargs else request.endpoint
     for plugin in request.user_plugins:
         for script in plugin.js_dependencies:
             kwargs['scripts'].add(script)
@@ -400,11 +433,27 @@ def render(template_name, override_theme=None, **kwargs):
         '{}/{}'.format(kwargs['theme'], template_name), **kwargs)
 
 
+def _get_ordered_categories():
+    ordered_categories = []
+    if 'categories_order' not in settings['ui']:
+        ordered_categories = ['general']
+        ordered_categories.extend(x for x in sorted(categories.keys()) if x != 'general')
+        return ordered_categories
+    ordered_categories = settings['ui']['categories_order']
+    ordered_categories.extend(x for x in sorted(categories.keys()) if x not in ordered_categories)
+    return ordered_categories
+
+
 @app.before_request
 def pre_request():
+    request.start_time = time()
+    request.timings = []
     request.errors = []
 
     preferences = Preferences(themes, list(categories.keys()), engines, plugins)
+    user_agent = request.headers.get('User-Agent', '').lower()
+    if 'webkit' in user_agent and 'android' in user_agent:
+        preferences.key_value_settings['method'].value = 'GET'
     request.preferences = preferences
     try:
         preferences.parse_dict(request.cookies)
@@ -423,9 +472,15 @@ def pre_request():
     else:
         try:
             preferences.parse_dict(request.form)
-        except Exception as e:
+        except Exception:
             logger.exception('invalid settings')
             request.errors.append(gettext('Invalid settings'))
+
+    # init search language and locale
+    if not preferences.get_value("language"):
+        preferences.parse_dict({"language": _get_browser_or_settings_language(request, LANGUAGE_CODES)})
+    if not preferences.get_value("locale"):
+        preferences.parse_dict({"locale": get_locale()})
 
     # request.user_plugins
     request.user_plugins = []
@@ -435,6 +490,31 @@ def pre_request():
         if ((plugin.default_on and plugin.id not in disabled_plugins)
                 or plugin.id in allowed_plugins):
             request.user_plugins.append(plugin)
+
+
+@app.after_request
+def add_default_headers(response):
+    # set default http headers
+    for header, value in settings['server'].get('default_http_headers', {}).items():
+        if header in response.headers:
+            continue
+        response.headers[header] = value
+    return response
+
+
+@app.after_request
+def post_request(response):
+    total_time = time() - request.start_time
+    timings_all = ['total;dur=' + str(round(total_time * 1000, 3))]
+    if len(request.timings) > 0:
+        timings = sorted(request.timings, key=lambda v: v['total'])
+        timings_total = ['total_' + str(i) + '_' + v['engine'] +
+                         ';dur=' + str(round(v['total'] * 1000, 3)) for i, v in enumerate(timings)]
+        timings_load = ['load_' + str(i) + '_' + v['engine'] +
+                        ';dur=' + str(round(v['load'] * 1000, 3)) for i, v in enumerate(timings)]
+        timings_all = timings_all + timings_total + timings_load
+    response.headers.add('Server-Timing', ', '.join(timings_all))
+    return response
 
 
 def index_error(output_format, error_message):
@@ -462,13 +542,32 @@ def index_error(output_format, error_message):
         request.errors.append(gettext('search error'))
         return render(
             'index.html',
+            selected_categories=get_selected_categories(request.preferences, request.form),
         )
 
 
-@app.route('/search', methods=['GET', 'POST'])
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    """Render index page.
+    """Render index page."""
+
+    # UI
+    advanced_search = request.preferences.get_value('advanced_search')
+
+    # redirect to search if there's a query in the request
+    if request.form.get('q'):
+        query = ('?' + request.query_string.decode()) if request.query_string else ''
+        return redirect(url_for('search') + query, 308)
+
+    return render(
+        'index.html',
+        selected_categories=get_selected_categories(request.preferences, request.form),
+        advanced_search=advanced_search,
+    )
+
+
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    """Search query in q and return results.
 
     Supported outputs: html, json, csv, rss.
     """
@@ -478,32 +577,34 @@ def index():
     if output_format not in ['html', 'csv', 'json', 'rss']:
         output_format = 'html'
 
-    # check if there is query
-    if request.form.get('q') is None:
+    # check if there is query (not None and not an empty string)
+    if not request.form.get('q'):
         if output_format == 'html':
             return render(
                 'index.html',
+                advanced_search=request.preferences.get_value('advanced_search'),
+                selected_categories=get_selected_categories(request.preferences, request.form),
             )
         else:
             return index_error(output_format, 'No query'), 400
 
     # search
     search_query = None
+    raw_text_query = None
     result_container = None
     try:
-        search_query = get_search_query_from_webapp(request.preferences, request.form)
+        search_query, raw_text_query, _, _ = get_search_query_from_webapp(request.preferences, request.form)
         # search = Search(search_query) #  without plugins
         search = SearchWithPlugins(search_query, request.user_plugins, request)
-        result_container = search.search()
-    except Exception as e:
-        # log exception
-        logger.exception('search error')
 
-        # is it an invalid input parameter or something else ?
-        if (issubclass(e.__class__, SearxParameterException)):
-            return index_error(output_format, e.message), 400
-        else:
-            return index_error(output_format, gettext('search error')), 500
+        result_container = search.search()
+
+    except SearxParameterException as e:
+        logger.exception('search error: SearxParameterException')
+        return index_error(output_format, e.message), 400
+    except Exception as e:
+        logger.exception('search error')
+        return index_error(output_format, gettext('search error')), 500
 
     # results
     results = result_container.get_ordered_results()
@@ -513,22 +614,28 @@ def index():
     if number_of_results < result_container.results_length():
         number_of_results = 0
 
-    # UI
-    advanced_search = request.form.get('advanced_search', None)
+    # checkin for a external bang
+    if result_container.redirect_url:
+        return redirect(result_container.redirect_url)
+
+    # Server-Timing header
+    request.timings = result_container.get_timings()
 
     # output
     for result in results:
         if output_format == 'html':
             if 'content' in result and result['content']:
                 result['content'] = highlight_content(escape(result['content'][:1024]), search_query.query)
-            result['title'] = highlight_content(escape(result['title'] or u''), search_query.query)
+            if 'title' in result and result['title']:
+                result['title'] = highlight_content(escape(result['title'] or ''), search_query.query)
         else:
             if result.get('content'):
                 result['content'] = html_to_text(result['content']).strip()
             # removing html content and whitespace duplications
             result['title'] = ' '.join(html_to_text(result['title']).strip().split())
 
-        result['pretty_url'] = prettify_url(result['url'])
+        if 'url' in result:
+            result['pretty_url'] = prettify_url(result['url'])
 
         # TODO, check if timezone is calculated right
         if 'publishedDate' in result:
@@ -542,39 +649,53 @@ def index():
                     minutes = int((timedifference.seconds / 60) % 60)
                     hours = int(timedifference.seconds / 60 / 60)
                     if hours == 0:
-                        result['publishedDate'] = gettext(u'{minutes} minute(s) ago').format(minutes=minutes)
+                        result['publishedDate'] = gettext('{minutes} minute(s) ago').format(minutes=minutes)
                     else:
-                        result['publishedDate'] = gettext(u'{hours} hour(s), {minutes} minute(s) ago').format(hours=hours, minutes=minutes)  # noqa
+                        result['publishedDate'] = gettext('{hours} hour(s), {minutes} minute(s) ago').format(hours=hours, minutes=minutes)  # noqa
                 else:
                     result['publishedDate'] = format_date(result['publishedDate'])
 
     if output_format == 'json':
-        return Response(json.dumps({'query': search_query.query.decode('utf-8'),
+        return Response(json.dumps({'query': search_query.query,
                                     'number_of_results': number_of_results,
                                     'results': results,
                                     'answers': list(result_container.answers),
                                     'corrections': list(result_container.corrections),
                                     'infoboxes': result_container.infoboxes,
                                     'suggestions': list(result_container.suggestions),
-                                    'unresponsive_engines': list(result_container.unresponsive_engines)},
+                                    'unresponsive_engines': __get_translated_errors(result_container.unresponsive_engines)},  # noqa
                                    default=lambda item: list(item) if isinstance(item, set) else item),
                         mimetype='application/json')
     elif output_format == 'csv':
         csv = UnicodeWriter(StringIO())
-        keys = ('title', 'url', 'content', 'host', 'engine', 'score')
+        keys = ('title', 'url', 'content', 'host', 'engine', 'score', 'type')
         csv.writerow(keys)
         for row in results:
             row['host'] = row['parsed_url'].netloc
+            row['type'] = 'result'
+            csv.writerow([row.get(key, '') for key in keys])
+        for a in result_container.answers:
+            row = {'title': a, 'type': 'answer'}
+            csv.writerow([row.get(key, '') for key in keys])
+        for a in result_container.suggestions:
+            row = {'title': a, 'type': 'suggestion'}
+            csv.writerow([row.get(key, '') for key in keys])
+        for a in result_container.corrections:
+            row = {'title': a, 'type': 'correction'}
             csv.writerow([row.get(key, '') for key in keys])
         csv.stream.seek(0)
         response = Response(csv.stream.read(), mimetype='application/csv')
         cont_disp = 'attachment;Filename=searx_-_{0}.csv'.format(search_query.query)
         response.headers.add('Content-Disposition', cont_disp)
         return response
+
     elif output_format == 'rss':
         response_rss = render(
             'opensearch_response_rss.xml',
             results=results,
+            answers=result_container.answers,
+            corrections=result_container.corrections,
+            suggestions=result_container.suggestions,
             q=request.form['q'],
             number_of_results=number_of_results,
             base_url=get_base_url(),
@@ -582,6 +703,21 @@ def index():
         )
         return Response(response_rss, mimetype='text/xml')
 
+    # HTML output format
+
+    # suggestions: use RawTextQuery to get the suggestion URLs with the same bang
+    suggestion_urls = list(map(lambda suggestion: {
+                               'url': raw_text_query.changeQuery(suggestion).getFullQuery(),
+                               'title': suggestion
+                               },
+                               result_container.suggestions))
+
+    correction_urls = list(map(lambda correction: {
+                               'url': raw_text_query.changeQuery(correction).getFullQuery(),
+                               'title': correction
+                               },
+                               result_container.corrections))
+    #
     return render(
         'results.html',
         results=results,
@@ -592,20 +728,30 @@ def index():
         qid=qid,
         time_range=search_query.time_range,
         number_of_results=format_decimal(number_of_results),
-        advanced_search=advanced_search,
-        suggestions=result_container.suggestions,
+        suggestions=suggestion_urls,
         answers=result_container.answers,
-        corrections=result_container.corrections,
+        corrections=correction_urls,
         infoboxes=result_container.infoboxes,
         paging=result_container.paging,
-        unresponsive_engines=result_container.unresponsive_engines,
+        unresponsive_engines=__get_translated_errors(result_container.unresponsive_engines),
         current_language=match_language(search_query.lang,
                                         LANGUAGE_CODES,
-                                        fallback=settings['search']['language']),
+                                        fallback=request.preferences.get_value("language")),
         base_url=get_base_url(),
         theme=get_current_theme_name(),
-        favicons=global_favicons[themes.index(get_current_theme_name())]
+        favicons=global_favicons[themes.index(get_current_theme_name())],
+        timeout_limit=request.form.get('timeout_limit', None)
     )
+
+
+def __get_translated_errors(unresponsive_engines):
+    translated_errors = set()
+    for unresponsive_engine in unresponsive_engines:
+        error_msg = gettext(unresponsive_engine[1])
+        if unresponsive_engine[2]:
+            error_msg = "{} {}".format(error_msg, unresponsive_engine[2])
+        translated_errors.add((unresponsive_engine[0], error_msg))
+    return translated_errors
 
 
 @app.route('/about', methods=['GET'])
@@ -624,14 +770,10 @@ def autocompleter():
     disabled_engines = request.preferences.engines.get_disabled()
 
     # parse query
-    if PY3:
-        raw_text_query = RawTextQuery(request.form.get('q', b''), disabled_engines)
-    else:
-        raw_text_query = RawTextQuery(request.form.get('q', u'').encode('utf-8'), disabled_engines)
-    raw_text_query.parse_query()
+    raw_text_query = RawTextQuery(request.form.get('q', ''), disabled_engines)
 
     # check if search query is set
-    if not raw_text_query.getSearchQuery():
+    if not raw_text_query.getQuery():
         return '', 400
 
     # run autocompleter
@@ -640,8 +782,11 @@ def autocompleter():
     # parse searx specific autocompleter results like !bang
     raw_results = searx_bang(raw_text_query)
 
-    # normal autocompletion results only appear if max 3 inner results returned
-    if len(raw_results) <= 3 and completer:
+    # normal autocompletion results only appear if no inner results returned
+    # and there is a query part besides the engine and language bangs
+    if len(raw_results) == 0 and completer and (len(raw_text_query.query_parts) > 1 or
+                                                (len(raw_text_query.languages) == 0 and
+                                                 not raw_text_query.specific)):
         # get language from cookie
         language = request.preferences.get_value('language')
         if not language or language == 'all':
@@ -649,23 +794,23 @@ def autocompleter():
         else:
             language = language.split('-')[0]
         # run autocompletion
-        raw_results.extend(completer(raw_text_query.getSearchQuery(), language))
+        raw_results.extend(completer(raw_text_query.getQuery(), language))
 
     # parse results (write :language and !engine back to result string)
     results = []
     for result in raw_results:
-        raw_text_query.changeSearchQuery(result)
+        raw_text_query.changeQuery(result)
 
         # add parsed result
         results.append(raw_text_query.getFullQuery())
 
     # return autocompleter results
-    if request.form.get('format') == 'x-suggestions':
-        return Response(json.dumps([raw_text_query.query, results]),
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return Response(json.dumps(results),
                         mimetype='application/json')
 
-    return Response(json.dumps(results),
-                    mimetype='application/json')
+    return Response(json.dumps([raw_text_query.query, results]),
+                    mimetype='application/x-suggestions+json')
 
 
 @app.route('/preferences', methods=['GET', 'POST'])
@@ -684,15 +829,19 @@ def preferences():
 
     # render preferences
     image_proxy = request.preferences.get_value('image_proxy')
-    lang = request.preferences.get_value('language')
     disabled_engines = request.preferences.engines.get_disabled()
     allowed_plugins = request.preferences.plugins.get_enabled()
 
     # stats for preferences page
     stats = {}
 
+    engines_by_category = {}
     for c in categories:
+        engines_by_category[c] = []
         for e in categories[c]:
+            if not request.preferences.validate_token(e):
+                continue
+
             stats[e.name] = {'time': None,
                              'warn_timeout': False,
                              'warn_time': False}
@@ -700,19 +849,27 @@ def preferences():
                 stats[e.name]['warn_timeout'] = True
             stats[e.name]['supports_selected_language'] = _is_selected_language_supported(e, request.preferences)
 
+            engines_by_category[c].append(e)
+
     # get first element [0], the engine time,
     # and then the second element [1] : the time (the first one is the label)
-    for engine_stat in get_engines_stats()[0][1]:
+    for engine_stat in get_engines_stats(request.preferences)[0][1]:
         stats[engine_stat.get('name')]['time'] = round(engine_stat.get('avg'), 3)
         if engine_stat.get('avg') > settings['outgoing']['request_timeout']:
             stats[engine_stat.get('name')]['warn_time'] = True
     # end of stats
 
+    locked_preferences = list()
+    if 'preferences' in settings and 'lock' in settings['preferences']:
+        locked_preferences = settings['preferences']['lock']
+
     return render('preferences.html',
+                  selected_categories=get_selected_categories(request.preferences, request.form),
+                  all_categories=_get_ordered_categories(),
                   locales=settings['locales'],
-                  current_locale=get_locale(),
+                  current_locale=request.preferences.get_value("locale"),
                   image_proxy=image_proxy,
-                  engines_by_category=categories,
+                  engines_by_category=engines_by_category,
                   stats=stats,
                   answerers=[{'info': a.self_info(), 'keywords': a.keywords} for a in answerers],
                   disabled_engines=disabled_engines,
@@ -726,6 +883,7 @@ def preferences():
                   theme=get_current_theme_name(),
                   preferences_url_params=request.preferences.get_as_url_params(),
                   base_url=get_base_url(),
+                  locked_preferences=locked_preferences,
                   preferences=True)
 
 
@@ -739,7 +897,7 @@ def _is_selected_language_supported(engine, preferences):
 
 @app.route('/image_proxy', methods=['GET'])
 def image_proxy():
-    url = request.args.get('url').encode('utf-8')
+    url = request.args.get('url').encode()
 
     if not url:
         return '', 400
@@ -756,7 +914,7 @@ def image_proxy():
                         stream=True,
                         timeout=settings['outgoing']['request_timeout'],
                         headers=headers,
-                        proxies=outgoing_proxies)
+                        proxies=get_global_proxies())
 
     if resp.status_code == 304:
         return '', resp.status_code
@@ -788,11 +946,39 @@ def image_proxy():
 @app.route('/stats', methods=['GET'])
 def stats():
     """Render engine statistics page."""
-    stats = get_engines_stats()
+    stats = get_engines_stats(request.preferences)
     return render(
         'stats.html',
         stats=stats,
     )
+
+
+@app.route('/stats/errors', methods=['GET'])
+def stats_errors():
+    result = {}
+    engine_names = list(errors_per_engines.keys())
+    engine_names.sort()
+    for engine_name in engine_names:
+        error_stats = errors_per_engines[engine_name]
+        sent_search_count = max(engines[engine_name].stats['sent_search_count'], 1)
+        sorted_context_count_list = sorted(error_stats.items(), key=lambda context_count: context_count[1])
+        r = []
+        percentage_sum = 0
+        for context, count in sorted_context_count_list:
+            percentage = round(20 * count / sent_search_count) * 5
+            percentage_sum += percentage
+            r.append({
+                'filename': context.filename,
+                'function': context.function,
+                'line_no': context.line_no,
+                'code': context.code,
+                'exception_classname': context.exception_classname,
+                'log_message': context.log_message,
+                'log_parameters': context.log_parameters,
+                'percentage': percentage,
+            })
+        result[engine_name] = sorted(r, reverse=True, key=lambda d: d['percentage'])
+    return jsonify(result)
 
 
 @app.route('/robots.txt', methods=['GET'])
@@ -825,7 +1011,7 @@ def opensearch():
 
     resp = Response(response=ret,
                     status=200,
-                    mimetype="text/xml")
+                    mimetype="application/opensearchdescription+xml")
     return resp
 
 
@@ -850,34 +1036,59 @@ def clear_cookies():
 
 @app.route('/config')
 def config():
-    return jsonify({'categories': categories.keys(),
-                    'engines': [{'name': engine_name,
-                                 'categories': engine.categories,
-                                 'shortcut': engine.shortcut,
-                                 'enabled': not engine.disabled,
-                                 'paging': engine.paging,
-                                 'language_support': engine.language_support,
-                                 'supported_languages':
-                                 engine.supported_languages.keys()
-                                 if isinstance(engine.supported_languages, dict)
-                                 else engine.supported_languages,
-                                 'safesearch': engine.safesearch,
-                                 'time_range_support': engine.time_range_support,
-                                 'timeout': engine.timeout}
-                                for engine_name, engine in engines.items()],
-                    'plugins': [{'name': plugin.name,
-                                 'enabled': plugin.default_on}
-                                for plugin in plugins],
-                    'instance_name': settings['general']['instance_name'],
-                    'locales': settings['locales'],
-                    'default_locale': settings['ui']['default_locale'],
-                    'autocomplete': settings['search']['autocomplete'],
-                    'safe_search': settings['search']['safe_search'],
-                    'default_theme': settings['ui']['default_theme'],
-                    'version': VERSION_STRING,
-                    'doi_resolvers': [r for r in settings['doi_resolvers']],
-                    'default_doi_resolver': settings['default_doi_resolver'],
-                    })
+    """Return configuration in JSON format."""
+    _engines = []
+    for name, engine in engines.items():
+        if not request.preferences.validate_token(engine):
+            continue
+
+        supported_languages = engine.supported_languages
+        if isinstance(engine.supported_languages, dict):
+            supported_languages = list(engine.supported_languages.keys())
+
+        _engines.append({
+            'name': name,
+            'categories': engine.categories,
+            'shortcut': engine.shortcut,
+            'enabled': not engine.disabled,
+            'paging': engine.paging,
+            'language_support': engine.language_support,
+            'supported_languages': supported_languages,
+            'safesearch': engine.safesearch,
+            'time_range_support': engine.time_range_support,
+            'timeout': engine.timeout
+        })
+
+    _plugins = []
+    for _ in plugins:
+        _plugins.append({'name': _.name, 'enabled': _.default_on})
+
+    return jsonify({
+        'categories': list(categories.keys()),
+        'engines': _engines,
+        'plugins': _plugins,
+        'instance_name': settings['general']['instance_name'],
+        'locales': settings['locales'],
+        'default_locale': settings['ui']['default_locale'],
+        'autocomplete': settings['search']['autocomplete'],
+        'safe_search': settings['search']['safe_search'],
+        'default_theme': settings['ui']['default_theme'],
+        'version': VERSION_STRING,
+        'brand': {
+            'GIT_URL': brand.GIT_URL,
+            'DOCS_URL': brand.DOCS_URL
+        },
+        'doi_resolvers': [r for r in settings['doi_resolvers']],
+        'default_doi_resolver': settings['default_doi_resolver'],
+    })
+
+
+@app.route('/translations.js')
+def js_translations():
+    return render(
+        'translations.js.tpl',
+        override_theme='__common__',
+    ), {'Content-Type': 'text/javascript; charset=UTF-8'}
 
 
 @app.errorhandler(404)
@@ -886,7 +1097,7 @@ def page_not_found(e):
 
 
 def run():
-    logger.debug('starting webserver on %s:%s', settings['server']['port'], settings['server']['bind_address'])
+    logger.debug('starting webserver on %s:%s', settings['server']['bind_address'], settings['server']['port'])
     app.run(
         debug=searx_debug,
         use_debugger=searx_debug,
@@ -896,7 +1107,7 @@ def run():
     )
 
 
-class ReverseProxyPathFix(object):
+class ReverseProxyPathFix:
     '''Wrap the application in this middleware and configure the
     front-end server to add these headers, to let you quietly bind
     this to a URL other than / and to an HTTP scheme that is

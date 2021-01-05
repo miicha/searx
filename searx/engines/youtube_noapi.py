@@ -10,9 +10,7 @@
 
 from functools import reduce
 from json import loads
-from searx.engines.xpath import extract_text
-from searx.utils import list_get
-from searx.url_utils import quote_plus
+from urllib.parse import quote_plus
 
 # engine dependent config
 categories = ['videos', 'music']
@@ -30,7 +28,7 @@ time_range_dict = {'day': 'Ag',
                    'year': 'BQ'}
 
 embedded_url = '<iframe width="540" height="304" ' +\
-    'data-src="//www.youtube-nocookie.com/embed/{videoid}" ' +\
+    'data-src="https://www.youtube-nocookie.com/embed/{videoid}" ' +\
     'frameborder="0" allowfullscreen></iframe>'
 
 base_youtube_url = 'https://www.youtube.com/watch?v='
@@ -51,7 +49,7 @@ def response(resp):
     results = []
 
     results_data = resp.text[resp.text.find('ytInitialData'):]
-    results_data = results_data[results_data.find('{'):results_data.find(';\n')]
+    results_data = results_data[results_data.find('{'):results_data.find(';</script>')]
 
     results_json = loads(results_data) if results_data else {}
     sections = results_json.get('contents', {})\
@@ -67,21 +65,28 @@ def response(resp):
             if videoid is not None:
                 url = base_youtube_url + videoid
                 thumbnail = 'https://i.ytimg.com/vi/' + videoid + '/hqdefault.jpg'
-                title = video.get('title', {}).get('simpleText', videoid)
-                description_snippet = video.get('descriptionSnippet', {})
-                if 'runs' in description_snippet:
-                    content = reduce(lambda a, b: a + b.get('text', ''), description_snippet.get('runs'), '')
-                else:
-                    content = description_snippet.get('simpleText', '')
+                title = get_text_from_json(video.get('title', {}))
+                content = get_text_from_json(video.get('descriptionSnippet', {}))
                 embedded = embedded_url.format(videoid=videoid)
+                author = get_text_from_json(video.get('ownerText', {}))
+                length = get_text_from_json(video.get('lengthText', {}))
 
                 # append result
                 results.append({'url': url,
                                 'title': title,
                                 'content': content,
+                                'author': author,
+                                'length': length,
                                 'template': 'videos.html',
                                 'embedded': embedded,
                                 'thumbnail': thumbnail})
 
     # return results
     return results
+
+
+def get_text_from_json(element):
+    if 'runs' in element:
+        return reduce(lambda a, b: a + b.get('text', ''), element.get('runs'), '')
+    else:
+        return element.get('simpleText', '')

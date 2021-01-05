@@ -12,9 +12,9 @@
 # @todo        rewrite to api
 # @todo        set content-parameter with correct data
 
+from urllib.parse import urlencode
 from json import loads
 from dateutil import parser
-from searx.url_utils import urlencode
 
 # engine dependent config
 categories = ['videos']
@@ -24,7 +24,7 @@ paging = True
 base_url = 'https://vimeo.com/'
 search_url = base_url + '/search/page:{pageno}?{query}'
 
-embedded_url = '<iframe data-src="//player.vimeo.com/video/{videoid}" ' +\
+embedded_url = '<iframe data-src="https://player.vimeo.com/video/{videoid}" ' +\
     'width="540" height="304" frameborder="0" ' +\
     'webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>'
 

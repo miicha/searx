@@ -6,8 +6,6 @@
     <input type="hidden" name="time_range" value="{{ time_range }}" />{{- "" -}}
     <input type="hidden" name="language" value="{{ current_language }}" />{{- "" -}}
     {% if timeout_limit %}<input type="hidden" name="timeout_limit" value="{{ timeout_limit|e }}" />{% endif -%}
-    <input type="hidden" name="qid" value="{{ qid }}" />
-    <input type="hidden" name="cat" value="{{ cat }}" />
 {%- endmacro %}
 {%- macro search_url() %}{{ url_for('search', _external=True) }}?q={{ q|urlencode }}{% if selected_categories %}&amp;categories={{ selected_categories|join(",") | replace(' ','+') }}{% endif %}{% if pageno > 1 %}&amp;pageno={{ pageno }}{% endif %}{% if time_range %}&amp;time_range={{ time_range }}{% endif %}{% if current_language != 'all' %}&amp;language={{ current_language }}{% endif %}{% endmacro -%}
 

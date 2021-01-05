@@ -609,8 +609,6 @@ def search():
     # results
     results = result_container.get_ordered_results()
     number_of_results = result_container.results_number()
-    qid = result_container.qid()
-    cat = result_container.cat()
     if number_of_results < result_container.results_length():
         number_of_results = 0
 
@@ -724,8 +722,6 @@ def search():
         q=request.form['q'],
         selected_categories=search_query.categories,
         pageno=search_query.pageno,
-        cat=cat,
-        qid=qid,
         time_range=search_query.time_range,
         number_of_results=format_decimal(number_of_results),
         suggestions=suggestion_urls,

@@ -359,20 +359,6 @@ class ResultContainer:
     def results_length(self):
         return len(self._merged_results)
 
-    def qid(self):
-        try:
-            qid = self._qid[0]
-        except Exception as e:
-            qid = ''
-        return qid
-
-    def cat(self):
-        try:
-            cat = self._cat[0]
-        except Exception as e:
-            cat = ''
-        return cat
-
     def results_number(self):
         resultnum_sum = sum(self._number_of_results)
         if not resultnum_sum or not self._number_of_results:
